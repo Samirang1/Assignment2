@@ -1,0 +1,436 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Assignment 2</title>
+
+<script src="https://d3js.org/d3.v7.min.js"></script>
+
+<style>
+    body {
+        margin: 0;
+        font-family: Arial, sans-serif;
+        background: #f7f7f7;
+        color: #222;
+    }
+
+    h1 {
+        text-align: center;
+        margin: 20px 0 8px;
+    }
+
+    .subtitle {
+        text-align: center;
+        color: #666;
+        margin-bottom: 18px;
+    }
+
+    #controls {
+        display: flex;
+        justify-content: center;
+        gap: 35px;
+        flex-wrap: wrap;
+        padding: 12px;
+        background: white;
+        border-bottom: 1px solid #ddd;
+    }
+
+    .control {
+        min-width: 180px;
+    }
+
+    .control label {
+        display: block;
+        font-size: 14px;
+        margin-bottom: 5px;
+    }
+
+    .control input {
+        width: 180px;
+    }
+
+    #legend {
+        display: flex;
+        justify-content: center;
+        flex-wrap: wrap;
+        gap: 12px;
+        padding: 14px;
+        background: white;
+    }
+
+    .legend-item {
+        display: flex;
+        align-items: center;
+        gap: 5px;
+        font-size: 12px;
+    }
+
+    .legend-color {
+        width: 12px;
+        height: 12px;
+        border-radius: 50%;
+    }
+
+    #network {
+        width: 100%;
+        height: calc(100vh - 190px);
+        min-height: 450px;
+        display: block;
+        cursor: grab;
+    }
+
+    .links line {
+        stroke: #999;
+        stroke-opacity: 0.35;
+    }
+
+    .nodes circle {
+        stroke: white;
+        stroke-width: 0.6px;
+        cursor: pointer;
+    }
+
+    #tooltip {
+        position: fixed;
+        display: none;
+        max-width: 300px;
+        padding: 12px;
+        background: white;
+        border: 1px solid #bbb;
+        border-radius: 5px;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.18);
+        font-size: 13px;
+        line-height: 1.5;
+        pointer-events: none;
+        z-index: 10;
+    }
+
+    #tooltip strong {
+        display: block;
+        margin-bottom: 5px;
+    }
+</style>
+</head>
+
+<body>
+
+<h1>Author Collaboration Network</h1>
+<p class="subtitle">
+    Each node represents an author. Links represent shared publications.
+</p>
+
+<div id="controls">
+
+    <div class="control">
+        <label>
+            Charge:
+            <span id="chargeValue">-100</span>
+        </label>
+        <input
+            type="range"
+            id="charge"
+            min="-300"
+            max="-30"
+            value="1000"
+        >
+    </div>
+
+    <div class="control">
+        <label>
+            Collision radius factor:
+            <span id="collisionValue">1.5</span>
+        </label>
+        <input
+            type="range"
+            id="collision"
+            min="1"
+            max="3"
+            step="0.1"
+            value="1.5"
+        >
+    </div>
+
+    <div class="control">
+        <label>
+            Link strength:
+            <span id="linkValue">0.5</span>
+        </label>
+        <input
+            type="range"
+            id="linkStrength"
+            min="0"
+            max="1"
+            step="0.05"
+            value="0.5"
+        >
+    </div>
+
+</div>
+
+<div id="legend"></div>
+
+<svg id="network"></svg>
+
+<div id="tooltip"></div>
+
+<script>
+const width = window.innerWidth;
+const height = Math.max(450, window.innerHeight - 190);
+
+const svg = d3.select("#network")
+    .attr("viewBox", [0, 0, width, height]);
+
+const zoomGroup = svg.append("g")
+    .attr(
+        "transform",
+        `translate(${width * 0.1}, ${height * 0.1}) scale(0.8)`
+    );
+
+const tooltip = d3.select("#tooltip");
+
+const colorPalette = d3.schemeTableau10;
+
+let selectedAuthor = null;
+let simulation;
+let nodes;
+let links;
+let nodeSelection;
+let linkSelection;
+
+// Escape text before inserting it into tooltip HTML.
+function escapeHTML(value) {
+    return String(value).replace(/[&<>"']/g, character => ({
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        '"': "&quot;",
+        "'": "&#39;"
+    })[character]);
+}
+
+// Load the processed network data.
+d3.json("network.json").then(data => {
+
+    nodes = data.nodes;
+    links = data.links;
+
+    const topCountries = data.topCountries;
+
+    const countryColors = new Map(
+        topCountries.map((country, index) => [
+            country,
+            colorPalette[index]
+        ])
+    );
+
+    function nodeColor(d) {
+        return countryColors.get(d.country) || "#A9A9A9";
+    }
+
+    const legend = d3.select("#legend");
+
+    topCountries.forEach(country => {
+        const item = legend.append("div")
+            .attr("class", "legend-item");
+
+        item.append("span")
+            .attr("class", "legend-color")
+            .style("background", countryColors.get(country));
+
+        item.append("span")
+            .text(country);
+    });
+
+    const otherItem = legend.append("div")
+        .attr("class", "legend-item");
+
+    otherItem.append("span")
+        .attr("class", "legend-color")
+        .style("background", "#A9A9A9");
+
+    otherItem.append("span")
+        .text("Other countries");
+
+    const degreeExtent = d3.extent(nodes, d => d.degree);
+
+    const radiusScale = d3.scaleSqrt()
+        .domain(
+            degreeExtent[0] === degreeExtent[1]
+                ? [0, Math.max(1, degreeExtent[1])]
+                : degreeExtent
+        )
+        .range([3, 12]);
+
+    nodes.forEach(d => {
+        d.radius = radiusScale(d.degree);
+    });
+
+    // Create links.
+    linkSelection = zoomGroup.append("g")
+        .attr("class", "links")
+        .selectAll("line")
+        .data(links)
+        .join("line")
+        .attr("stroke-width", d => Math.sqrt(d.weight));
+
+    // Create nodes.
+    nodeSelection = zoomGroup.append("g")
+        .attr("class", "nodes")
+        .selectAll("circle")
+        .data(nodes)
+        .join("circle")
+        .attr("r", d => d.radius)
+        .attr("fill", nodeColor);
+
+    // Show author information in the tooltip.
+    function showTooltip(d, event) {
+        tooltip
+            .style("display", "block")
+            .style("left", Math.min(event.clientX + 12, window.innerWidth - 320) + "px")
+            .style("top", Math.min(event.clientY + 12, window.innerHeight - 150) + "px")
+            .html(`
+                <strong>${escapeHTML(d.name)}</strong>
+                <div><b>Affiliation:</b> ${escapeHTML(d.affiliation)}</div>
+                <div><b>Country:</b> ${escapeHTML(d.country)}</div>
+                <div><b>Degree:</b> ${d.degree}</div>
+            `);
+    }
+
+    // Highlight authors with the same affiliation.
+    function applyHighlight(affiliation) {
+        if (affiliation === null) {
+            nodeSelection.style("opacity", 1);
+            linkSelection.style("opacity", 0.35);
+            return;
+        }
+
+        nodeSelection.style("opacity", d =>
+            d.affiliation === affiliation ? 1 : 0.2
+        );
+
+        linkSelection.style("opacity", d =>
+            d.source.affiliation === affiliation &&
+            d.target.affiliation === affiliation
+                ? 0.7
+                : 0.05
+        );
+    }
+
+    // Hover interaction.
+    nodeSelection
+        .on("mouseenter", function(event, d) {
+            applyHighlight(d.affiliation);
+        })
+        .on("mouseleave", function() {
+            applyHighlight(null);
+        });
+
+    // Click interaction.
+    nodeSelection.on("click", function(event, d) {
+        event.stopPropagation();
+
+        selectedAuthor = d;
+        applyHighlight(d.affiliation);
+        showTooltip(d, event);
+    });
+
+    svg.on("click", function() {
+        selectedAuthor = null;
+        tooltip.style("display", "none");
+        applyHighlight(null);
+    });
+
+    // Allow Escape to dismiss the selected author.
+    d3.select(window).on("keydown", event => {
+        if (event.key === "Escape") {
+            selectedAuthor = null;
+            tooltip.style("display", "none");
+            applyHighlight(null);
+        }
+    });
+
+    // Drag interaction.
+    nodeSelection.call(
+        d3.drag()
+            .on("start", (event, d) => {
+                if (!event.active) simulation.alphaTarget(0.3).restart();
+                d.fx = d.x;
+                d.fy = d.y;
+            })
+            .on("drag", (event, d) => {
+                d.fx = event.x;
+                d.fy = event.y;
+            })
+            .on("end", (event, d) => {
+                if (!event.active) simulation.alphaTarget(0);
+                d.fx = null;
+                d.fy = null;
+            })
+    );
+
+    // Force simulation.
+    const chargeForce = d3.forceManyBody()
+        .strength(+document.getElementById("charge").value);
+
+    const collisionForce = d3.forceCollide()
+        .radius(d =>
+            d.radius * +document.getElementById("collision").value
+        );
+
+    const linkForce = d3.forceLink(links)
+        .id(d => d.id)
+        .strength(+document.getElementById("linkStrength").value);
+
+
+    simulation = d3.forceSimulation(nodes)
+        .force("link", linkForce)
+        .force("charge", chargeForce)
+        .force("collide", collisionForce)
+        .force("center", d3.forceCenter(width / 2, height / 2))
+        .force("x", d3.forceX(width / 2).strength(0.03))
+        .force("y", d3.forceY(height / 2).strength(0.03))
+        .on("tick", () => {
+
+            linkSelection
+                .attr("x1", d => d.source.x)
+                .attr("y1", d => d.source.y)
+                .attr("x2", d => d.target.x)
+                .attr("y2", d => d.target.y);
+
+            nodeSelection
+                .attr("cx", d => d.x)
+                .attr("cy", d => d.y);
+        });
+
+
+    document.getElementById("charge").addEventListener("input", function() {
+        document.getElementById("chargeValue").textContent = this.value;
+        chargeForce.strength(+this.value);
+        simulation.alpha(0.3).restart();
+    });
+
+    document.getElementById("collision").addEventListener("input", function() {
+        document.getElementById("collisionValue").textContent = this.value;
+        collisionForce.radius(d => d.radius * +this.value);
+        simulation.alpha(0.3).restart();
+    });
+
+    document.getElementById("linkStrength").addEventListener("input", function() {
+        document.getElementById("linkValue").textContent = this.value;
+        linkForce.strength(+this.value);
+        simulation.alpha(0.3).restart();
+    });
+
+}).catch(error => {
+    console.error("Could not load network.json:", error);
+    document.body.insertAdjacentHTML(
+        "beforeend",
+        "<p style='text-align:center;color:red'>Could not load network.json. Check that it is in the same folder as index.html and that the page is being served through a local web server.</p>"
+    );
+});
+</script>
+
+</body>
+</html>
